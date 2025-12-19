@@ -1676,12 +1676,29 @@ class PetriNetWidget(QWidget):
         start = self.place_positions[p_idx]
         end_center = self.transition_positions[t_idx]
 
-        # Вычисляем точки для ломаной линии (Manhattan routing)
-        # Стартовая точка — на краю круга (справа)
-        start_pt = QPointF(start.x() + r_place, start.y())
+        # Вычисляем направление стрелки
+        dx = end_center.x() - start.x()
+        dy = end_center.y() - start.y()
         
-        # Конечная точка — на краю прямоугольника (слева)
-        end_pt = QPointF(end_center.x() - w_trans / 2, end_center.y())
+        # Определяем, с какой стороны круга должна начинаться стрелка
+        # Вычисляем угол направления
+        angle = math.atan2(dy, dx) if (dx != 0 or dy != 0) else 0
+        
+        # Стартовая точка — на краю круга в направлении стрелки
+        start_pt = QPointF(
+            start.x() + r_place * math.cos(angle),
+            start.y() + r_place * math.sin(angle)
+        )
+        
+        # Конечная точка — на краю прямоугольника
+        # Определяем ближайшую сторону прямоугольника
+        trans_half_w = w_trans / 2
+        trans_half_h = h_trans / 2
+        
+        # Вычисляем точку пересечения с прямоугольником
+        end_pt = self._intersect_line_with_rect(
+            start_pt, end_center, trans_half_w, trans_half_h
+        )
         
         # Создаем ломаную: (x1, y1) -> (x_mid, y1) -> (x_mid, y2) -> (x2, y2)
         mid_x = (start_pt.x() + end_pt.x()) / 2
@@ -1707,11 +1724,27 @@ class PetriNetWidget(QWidget):
         start_center = self.transition_positions[t_idx]
         end = self.place_positions[p_idx]
 
-        # Стартовая точка — на краю прямоугольника (справа)
-        start_pt = QPointF(start_center.x() + w_trans / 2, start_center.y())
+        # Вычисляем направление стрелки
+        dx = end.x() - start_center.x()
+        dy = end.y() - start_center.y()
         
-        # Конечная точка — на краю круга (слева)
-        end_pt = QPointF(end.x() - r_place, end.y())
+        # Стартовая точка — на краю прямоугольника
+        trans_half_w = w_trans / 2
+        trans_half_h = h_trans / 2
+        
+        start_pt = self._intersect_line_with_rect(
+            end, start_center, trans_half_w, trans_half_h
+        )
+        
+        # Конечная точка — на краю круга в направлении стрелки
+        # Вычисляем угол направления (от перехода к месту)
+        angle = math.atan2(dy, dx) if (dx != 0 or dy != 0) else 0
+        
+        # Конечная точка на границе круга
+        end_pt = QPointF(
+            end.x() - r_place * math.cos(angle),
+            end.y() - r_place * math.sin(angle)
+        )
         
         # Создаем ломаную: (x1, y1) -> (x_mid, y1) -> (x_mid, y2) -> (x2, y2)
         mid_x = (start_pt.x() + end_pt.x()) / 2
