@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import QWidget
-from PySide6.QtGui import QPainter, QPen, QBrush, QColor
+from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QPainterPath
 from PySide6.QtCore import Qt, QPointF
 import math
 import os
@@ -1469,42 +1469,53 @@ class PetriNetWidget(QWidget):
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
 
-        # Для ортогонального режима используем ломаные линии
+        # Вычисляем смещения для отталкивания стрелок (для всех режимов)
+        arrow_offsets = self._compute_arrow_repulsion(place_radius, trans_w, trans_h)
+
+        # Для ортогонального режима используем ломаные линии с отталкиванием
         if self.layout_mode == "orthogonal":
             # Входные дуги: из мест в переходы (W_in)
             for t_idx in range(self.model.T):
                 for p_idx in range(self.model.P):
                     if self.model.W_in[t_idx][p_idx] == 1:
+                        key = ('place_to_transition', p_idx, t_idx)
+                        offset = arrow_offsets.get(key, 0)
                         self._draw_orthogonal_arrow_place_to_transition(
-                            painter, p_idx, t_idx, place_radius, trans_w, trans_h
+                            painter, p_idx, t_idx, place_radius, trans_w, trans_h, offset
                         )
 
             # Выходные дуги: из переходов в места (W_out)
             for t_idx in range(self.model.T):
                 for p_idx in range(self.model.P):
                     if self.model.W_out[t_idx][p_idx] == 1:
+                        key = ('transition_to_place', t_idx, p_idx)
+                        offset = arrow_offsets.get(key, 0)
                         self._draw_orthogonal_arrow_transition_to_place(
-                            painter, t_idx, p_idx, place_radius, trans_w, trans_h
+                            painter, t_idx, p_idx, place_radius, trans_w, trans_h, offset
                         )
         else:
-            # Обычные прямые линии для других режимов
+            # Обычные прямые линии для других режимов с отталкиванием
             # Входные дуги: из мест в переходы (W_in)
             for t_idx in range(self.model.T):
                 for p_idx in range(self.model.P):
                     if self.model.W_in[t_idx][p_idx] == 1:
+                        key = ('place_to_transition', p_idx, t_idx)
+                        offset = arrow_offsets.get(key, 0)
                         self._draw_arrow_place_to_transition(
-                            painter, p_idx, t_idx, place_radius, trans_w, trans_h
+                            painter, p_idx, t_idx, place_radius, trans_w, trans_h, offset
                         )
 
             # Выходные дуги: из переходов в места (W_out)
             for t_idx in range(self.model.T):
                 for p_idx in range(self.model.P):
                     if self.model.W_out[t_idx][p_idx] == 1:
+                        key = ('transition_to_place', t_idx, p_idx)
+                        offset = arrow_offsets.get(key, 0)
                         self._draw_arrow_transition_to_place(
-                            painter, t_idx, p_idx, place_radius, trans_w, trans_h
+                            painter, t_idx, p_idx, place_radius, trans_w, trans_h, offset
                         )
 
-    def _draw_arrow_place_to_transition(self, painter, p_idx, t_idx, r_place, w_trans, h_trans):
+    def _draw_arrow_place_to_transition(self, painter, p_idx, t_idx, r_place, w_trans, h_trans, offset=0):
         if p_idx >= len(self.place_positions) or t_idx >= len(self.transition_positions):
             return
 
@@ -1552,9 +1563,52 @@ class PetriNetWidget(QWidget):
             start_pt, end_center, trans_half_w, trans_half_h
         )
 
-        self._draw_arrow_line(painter, start_pt, end_pt)
+        # Применяем смещение для отталкивания с искривлением линии
+        if abs(offset) > 0.1:
+            # Вычисляем перпендикулярное направление
+            perp_angle = angle + math.pi / 2
+            
+            # Вычисляем контрольную точку для кривой Безье (смещаем середину)
+            mid_pt = QPointF(
+                (start_pt.x() + end_pt.x()) / 2,
+                (start_pt.y() + end_pt.y()) / 2
+            )
+            
+            # Смещаем контрольную точку перпендикулярно
+            control_pt = QPointF(
+                mid_pt.x() + offset * math.cos(perp_angle),
+                mid_pt.y() + offset * math.sin(perp_angle)
+            )
+            
+            # Используем квадратичную кривую Безье для плавного искривления
+            # Но сначала нужно пересчитать конечную точку, чтобы она точно попадала на границу
+            # Вычисляем направление от контрольной точки к конечному центру
+            dx_final = end_center.x() - control_pt.x()
+            dy_final = end_center.y() - control_pt.y()
+            angle_final = math.atan2(dy_final, dx_final) if (dx_final != 0 or dy_final != 0) else angle
+            
+            # Пересчитываем конечную точку на границе прямоугольника
+            end_pt = self._intersect_line_with_rect(
+                control_pt, end_center, trans_half_w, trans_half_h
+            )
+            
+            # Рисуем кривую Безье
+            path = QPainterPath()
+            path.moveTo(start_pt)
+            path.quadTo(control_pt, end_pt)
+            painter.drawPath(path)
+            
+            # Рисуем стрелку на конце кривой
+            # Вычисляем направление в конечной точке (касательная к кривой)
+            dx_end = end_pt.x() - control_pt.x()
+            dy_end = end_pt.y() - control_pt.y()
+            end_angle = math.atan2(dy_end, dx_end) if (dx_end != 0 or dy_end != 0) else angle
+            self._draw_arrow_head(painter, control_pt, end_pt)
+        else:
+            # Прямая линия без смещения
+            self._draw_arrow_line(painter, start_pt, end_pt)
 
-    def _draw_arrow_transition_to_place(self, painter, t_idx, p_idx, r_place, w_trans, h_trans):
+    def _draw_arrow_transition_to_place(self, painter, t_idx, p_idx, r_place, w_trans, h_trans, offset=0):
         if p_idx >= len(self.place_positions) or t_idx >= len(self.transition_positions):
             return
 
@@ -1580,7 +1634,51 @@ class PetriNetWidget(QWidget):
             end.y() - r_place * math.sin(angle)
         )
 
-        self._draw_arrow_line(painter, start_pt, end_pt)
+        # Применяем смещение для отталкивания с искривлением линии
+        if abs(offset) > 0.1:
+            # Вычисляем перпендикулярное направление
+            perp_angle = angle + math.pi / 2
+            
+            # Вычисляем контрольную точку для кривой Безье (смещаем середину)
+            mid_pt = QPointF(
+                (start_pt.x() + end_pt.x()) / 2,
+                (start_pt.y() + end_pt.y()) / 2
+            )
+            
+            # Смещаем контрольную точку перпендикулярно
+            control_pt = QPointF(
+                mid_pt.x() + offset * math.cos(perp_angle),
+                mid_pt.y() + offset * math.sin(perp_angle)
+            )
+            
+            # Используем квадратичную кривую Безье для плавного искривления
+            # Но сначала нужно пересчитать конечную точку, чтобы она точно попадала на границу круга
+            # Вычисляем направление от контрольной точки к конечному центру
+            dx_final = end.x() - control_pt.x()
+            dy_final = end.y() - control_pt.y()
+            angle_final = math.atan2(dy_final, dx_final) if (dx_final != 0 or dy_final != 0) else angle
+            
+            # Пересчитываем конечную точку на границе круга
+            end_pt = QPointF(
+                end.x() - r_place * math.cos(angle_final),
+                end.y() - r_place * math.sin(angle_final)
+            )
+            
+            # Рисуем кривую Безье
+            path = QPainterPath()
+            path.moveTo(start_pt)
+            path.quadTo(control_pt, end_pt)
+            painter.drawPath(path)
+            
+            # Рисуем стрелку на конце кривой
+            # Вычисляем направление в конечной точке (касательная к кривой)
+            dx_end = end_pt.x() - control_pt.x()
+            dy_end = end_pt.y() - control_pt.y()
+            end_angle = math.atan2(dy_end, dx_end) if (dx_end != 0 or dy_end != 0) else angle
+            self._draw_arrow_head(painter, control_pt, end_pt)
+        else:
+            # Прямая линия без смещения
+            self._draw_arrow_line(painter, start_pt, end_pt)
     
     def _intersect_line_with_rect(self, point_outside, rect_center, half_w, half_h):
         """Находит точку пересечения линии с прямоугольником."""
@@ -1668,7 +1766,7 @@ class PetriNetWidget(QWidget):
         painter.drawLine(end, p1)
         painter.drawLine(end, p2)
 
-    def _draw_orthogonal_arrow_place_to_transition(self, painter, p_idx, t_idx, r_place, w_trans, h_trans):
+    def _draw_orthogonal_arrow_place_to_transition(self, painter, p_idx, t_idx, r_place, w_trans, h_trans, offset_x=0):
         """Отрисовывает ортогональную (ломаную) стрелку от места к переходу."""
         if p_idx >= len(self.place_positions) or t_idx >= len(self.transition_positions):
             return
@@ -1701,7 +1799,8 @@ class PetriNetWidget(QWidget):
         )
         
         # Создаем ломаную: (x1, y1) -> (x_mid, y1) -> (x_mid, y2) -> (x2, y2)
-        mid_x = (start_pt.x() + end_pt.x()) / 2
+        # Применяем смещение для отталкивания параллельных стрелок
+        mid_x = (start_pt.x() + end_pt.x()) / 2 + offset_x
         points = [
             start_pt,
             QPointF(mid_x, start_pt.y()),
@@ -1716,7 +1815,7 @@ class PetriNetWidget(QWidget):
         # Рисуем стрелку на конце
         self._draw_arrow_head(painter, points[-2], points[-1])
     
-    def _draw_orthogonal_arrow_transition_to_place(self, painter, t_idx, p_idx, r_place, w_trans, h_trans):
+    def _draw_orthogonal_arrow_transition_to_place(self, painter, t_idx, p_idx, r_place, w_trans, h_trans, offset_x=0):
         """Отрисовывает ортогональную (ломаную) стрелку от перехода к месту."""
         if p_idx >= len(self.place_positions) or t_idx >= len(self.transition_positions):
             return
@@ -1747,7 +1846,8 @@ class PetriNetWidget(QWidget):
         )
         
         # Создаем ломаную: (x1, y1) -> (x_mid, y1) -> (x_mid, y2) -> (x2, y2)
-        mid_x = (start_pt.x() + end_pt.x()) / 2
+        # Применяем смещение для отталкивания параллельных стрелок
+        mid_x = (start_pt.x() + end_pt.x()) / 2 + offset_x
         points = [
             start_pt,
             QPointF(mid_x, start_pt.y()),
@@ -1761,6 +1861,362 @@ class PetriNetWidget(QWidget):
         
         # Рисуем стрелку на конце
         self._draw_arrow_head(painter, points[-2], points[-1])
+    
+    def _compute_arrow_repulsion(self, r_place, w_trans, h_trans):
+        """
+        Вычисляет смещения для стрелок, чтобы они не накладывались друг на друга.
+        Для ортогонального режима: смещение по оси X (offset_x)
+        Для остальных режимов: смещение перпендикулярно направлению стрелки
+        Возвращает словарь: {('place_to_transition', p_idx, t_idx): offset, ...}
+        """
+        if self.model is None:
+            return {}
+        
+        arrow_info = []  # Список информации о стрелках
+        arrow_offsets = {}  # Результирующие смещения
+        
+        # Минимальное расстояние между параллельными стрелками
+        min_spacing = 25
+        is_orthogonal = (self.layout_mode == "orthogonal")
+        
+        # Собираем информацию о всех стрелках
+        # Входные дуги: из мест в переходы (W_in)
+        for t_idx in range(self.model.T):
+            for p_idx in range(self.model.P):
+                if self.model.W_in[t_idx][p_idx] == 1:
+                    if (p_idx >= len(self.place_positions) or 
+                        t_idx >= len(self.transition_positions)):
+                        continue
+                    
+                    start = self.place_positions[p_idx]
+                    end_center = self.transition_positions[t_idx]
+                    
+                    dx = end_center.x() - start.x()
+                    dy = end_center.y() - start.y()
+                    angle = math.atan2(dy, dx) if (dx != 0 or dy != 0) else 0
+                    
+                    start_pt = QPointF(
+                        start.x() + r_place * math.cos(angle),
+                        start.y() + r_place * math.sin(angle)
+                    )
+                    
+                    trans_half_w = w_trans / 2
+                    trans_half_h = h_trans / 2
+                    end_pt = self._intersect_line_with_rect(
+                        start_pt, end_center, trans_half_w, trans_half_h
+                    )
+                    
+                    mid_x = (start_pt.x() + end_pt.x()) / 2
+                    mid_y_start = start_pt.y()
+                    mid_y_end = end_pt.y()
+                    
+                    arrow_info.append({
+                        'key': ('place_to_transition', p_idx, t_idx),
+                        'mid_x': mid_x,
+                        'y_start': mid_y_start,
+                        'y_end': mid_y_end,
+                        'start_x': start_pt.x(),
+                        'end_x': end_pt.x()
+                    })
+        
+        # Выходные дуги: из переходов в места (W_out)
+        for t_idx in range(self.model.T):
+            for p_idx in range(self.model.P):
+                if self.model.W_out[t_idx][p_idx] == 1:
+                    if (p_idx >= len(self.place_positions) or 
+                        t_idx >= len(self.transition_positions)):
+                        continue
+                    
+                    start_center = self.transition_positions[t_idx]
+                    end = self.place_positions[p_idx]
+                    
+                    dx = end.x() - start_center.x()
+                    dy = end.y() - start_center.y()
+                    angle = math.atan2(dy, dx) if (dx != 0 or dy != 0) else 0
+                    
+                    trans_half_w = w_trans / 2
+                    trans_half_h = h_trans / 2
+                    start_pt = self._intersect_line_with_rect(
+                        end, start_center, trans_half_w, trans_half_h
+                    )
+                    
+                    end_pt = QPointF(
+                        end.x() - r_place * math.cos(angle),
+                        end.y() - r_place * math.sin(angle)
+                    )
+                    
+                    mid_x = (start_pt.x() + end_pt.x()) / 2
+                    mid_y_start = start_pt.y()
+                    mid_y_end = end_pt.y()
+                    
+                    arrow_info.append({
+                        'key': ('transition_to_place', t_idx, p_idx),
+                        'mid_x': mid_x,
+                        'y_start': mid_y_start,
+                        'y_end': mid_y_end,
+                        'start_x': start_pt.x(),
+                        'end_x': end_pt.x()
+                    })
+        
+        if is_orthogonal:
+            # Для ортогонального режима группируем по y-координатам горизонтальных сегментов
+            y_groups = {}  # {y_coord: [arrow_info, ...]}
+            
+            for arrow in arrow_info:
+                # Используем среднюю y-координату для группировки
+                avg_y = (arrow['y_start'] + arrow['y_end']) / 2
+                
+                # Округляем до ближайшего значения для группировки
+                y_key = round(avg_y / min_spacing) * min_spacing
+                
+                if y_key not in y_groups:
+                    y_groups[y_key] = []
+                y_groups[y_key].append(arrow)
+            
+            # Для каждой группы вычисляем смещения
+            for y_key, arrows in y_groups.items():
+                if len(arrows) <= 1:
+                    # Только одна стрелка в группе - смещение не нужно
+                    for arrow in arrows:
+                        arrow_offsets[arrow['key']] = 0
+                    continue
+                
+                # Сортируем стрелки по mid_x
+                sorted_arrows = sorted(arrows, key=lambda a: a['mid_x'])
+                
+                # Вычисляем смещения для раздвижения
+                for i, arrow in enumerate(sorted_arrows):
+                    offset = 0
+                    
+                    # Проверяем расстояние до соседних стрелок
+                    if i > 0:
+                        # Проверяем расстояние до предыдущей стрелки
+                        prev_arrow = sorted_arrows[i - 1]
+                        distance = abs(arrow['mid_x'] - prev_arrow['mid_x'])
+                        if distance < min_spacing:
+                            # Нужно раздвинуть
+                            offset += (min_spacing - distance) / 2
+                    
+                    if i < len(sorted_arrows) - 1:
+                        # Проверяем расстояние до следующей стрелки
+                        next_arrow = sorted_arrows[i + 1]
+                        distance = abs(next_arrow['mid_x'] - arrow['mid_x'])
+                        if distance < min_spacing:
+                            # Нужно раздвинуть
+                            offset -= (min_spacing - distance) / 2
+                    
+                    arrow_offsets[arrow['key']] = offset
+        else:
+            # Для обычных стрелок проверяем расстояние между всеми парами стрелок
+            # и применяем отталкивание для близких стрелок
+            
+            # Вычисляем информацию о каждой стрелке (начало, конец, угол, перпендикуляр)
+            for arrow in arrow_info:
+                start_pt = QPointF(arrow['start_x'], arrow['y_start'])
+                end_pt = QPointF(arrow['end_x'], arrow['y_end'])
+                dx = end_pt.x() - start_pt.x()
+                dy = end_pt.y() - start_pt.y()
+                angle = math.atan2(dy, dx) if (dx != 0 or dy != 0) else 0
+                
+                arrow['start_pt'] = start_pt
+                arrow['end_pt'] = end_pt
+                arrow['angle'] = angle
+                arrow['perp_angle'] = angle + math.pi / 2
+                arrow['mid_pt'] = QPointF((start_pt.x() + end_pt.x()) / 2, (start_pt.y() + end_pt.y()) / 2)
+                arrow_offsets[arrow['key']] = 0  # Инициализируем смещения нулем
+            
+            # Вычисляем минимальное расстояние между двумя отрезками
+            def min_distance_between_segments(arrow1, arrow2):
+                """Вычисляет минимальное расстояние между двумя отрезками (стрелками)"""
+                p1_start = arrow1['start_pt']
+                p1_end = arrow1['end_pt']
+                p2_start = arrow2['start_pt']
+                p2_end = arrow2['end_pt']
+                
+                # Проверяем расстояния между всеми комбинациями точек
+                distances = []
+                
+                # Расстояния от точек первой стрелки до второй стрелки
+                for p in [p1_start, p1_end]:
+                    # Проекция точки на отрезок
+                    dx = p2_end.x() - p2_start.x()
+                    dy = p2_end.y() - p2_start.y()
+                    if dx == 0 and dy == 0:
+                        dist = math.sqrt((p.x() - p2_start.x())**2 + (p.y() - p2_start.y())**2)
+                        distances.append(dist)
+                    else:
+                        t = max(0, min(1, ((p.x() - p2_start.x()) * dx + (p.y() - p2_start.y()) * dy) / (dx*dx + dy*dy)))
+                        proj = QPointF(p2_start.x() + t * dx, p2_start.y() + t * dy)
+                        dist = math.sqrt((p.x() - proj.x())**2 + (p.y() - proj.y())**2)
+                        distances.append(dist)
+                
+                # Расстояния от точек второй стрелки до первой стрелки
+                for p in [p2_start, p2_end]:
+                    dx = p1_end.x() - p1_start.x()
+                    dy = p1_end.y() - p1_start.y()
+                    if dx == 0 and dy == 0:
+                        dist = math.sqrt((p.x() - p1_start.x())**2 + (p.y() - p1_start.y())**2)
+                        distances.append(dist)
+                    else:
+                        t = max(0, min(1, ((p.x() - p1_start.x()) * dx + (p.y() - p1_start.y()) * dy) / (dx*dx + dy*dy)))
+                        proj = QPointF(p1_start.x() + t * dx, p1_start.y() + t * dy)
+                        dist = math.sqrt((p.x() - proj.x())**2 + (p.y() - proj.y())**2)
+                        distances.append(dist)
+                
+                return min(distances) if distances else float('inf')
+            
+            # Для каждой пары стрелок проверяем расстояние и применяем отталкивание
+            for i, arrow1 in enumerate(arrow_info):
+                for j, arrow2 in enumerate(arrow_info):
+                    if i >= j:
+                        continue
+                    
+                    # Вычисляем минимальное расстояние между стрелками
+                    dist = min_distance_between_segments(arrow1, arrow2)
+                    
+                    if dist < min_spacing:
+                        # Стрелки слишком близко - нужно раздвинуть
+                        # Вычисляем направление отталкивания
+                        # Используем перпендикуляр к направлению первой стрелки
+                        perp_angle = arrow1['perp_angle']
+                        
+                        # Вычисляем, в какую сторону нужно сместить
+                        # Смещаем стрелки в противоположные стороны
+                        mid1 = arrow1['mid_pt']
+                        mid2 = arrow2['mid_pt']
+                        
+                        # Вектор от mid1 к mid2
+                        dx_mid = mid2.x() - mid1.x()
+                        dy_mid = mid2.y() - mid1.y()
+                        
+                        # Проекция на перпендикулярное направление
+                        perp_dot = dx_mid * math.cos(perp_angle) + dy_mid * math.sin(perp_angle)
+                        
+                        # Смещение для раздвижения
+                        offset_amount = (min_spacing - dist) / 2
+                        
+                        if abs(perp_dot) > 0.1:
+                            # Смещаем в противоположные стороны
+                            if perp_dot > 0:
+                                arrow_offsets[arrow1['key']] -= offset_amount
+                                arrow_offsets[arrow2['key']] += offset_amount
+                            else:
+                                arrow_offsets[arrow1['key']] += offset_amount
+                                arrow_offsets[arrow2['key']] -= offset_amount
+                        else:
+                            # Если стрелки почти параллельны, используем перпендикуляр к их направлению
+                            # Смещаем обе стрелки в разные стороны
+                            arrow_offsets[arrow1['key']] -= offset_amount
+                            arrow_offsets[arrow2['key']] += offset_amount
+        
+        # Применяем итеративное сглаживание для лучшего результата
+        # (простой алгоритм пружинки)
+        for iteration in range(3):
+            if is_orthogonal:
+                for y_key, arrows in y_groups.items():
+                    if len(arrows) <= 1:
+                        continue
+                    
+                    sorted_arrows = sorted(arrows, key=lambda a: a['mid_x'])
+                    
+                    for i, arrow in enumerate(sorted_arrows):
+                        key = arrow['key']
+                        current_offset = arrow_offsets.get(key, 0)
+                        
+                        # Сила отталкивания от соседних стрелок
+                        force = 0
+                        
+                        if i > 0:
+                            prev_key = sorted_arrows[i - 1]['key']
+                            prev_offset = arrow_offsets.get(prev_key, 0)
+                            prev_mid_x = sorted_arrows[i - 1]['mid_x'] + prev_offset
+                            current_mid_x = arrow['mid_x'] + current_offset
+                            distance = current_mid_x - prev_mid_x
+                            
+                            if distance < min_spacing:
+                                # Отталкивание
+                                force += (min_spacing - distance) * 0.3
+                        
+                        if i < len(sorted_arrows) - 1:
+                            next_key = sorted_arrows[i + 1]['key']
+                            next_offset = arrow_offsets.get(next_key, 0)
+                            next_mid_x = sorted_arrows[i + 1]['mid_x'] + next_offset
+                            current_mid_x = arrow['mid_x'] + current_offset
+                            distance = next_mid_x - current_mid_x
+                            
+                            if distance < min_spacing:
+                                # Отталкивание
+                                force -= (min_spacing - distance) * 0.3
+                        
+                        # Применяем силу (с затуханием)
+                        arrow_offsets[key] = current_offset + force * 0.5
+            else:
+                # Для неортогональных режимов применяем итеративное сглаживание
+                # Проверяем все пары стрелок и применяем силы отталкивания
+                for i, arrow1 in enumerate(arrow_info):
+                    key1 = arrow1['key']
+                    current_offset1 = arrow_offsets.get(key1, 0)
+                    force1 = 0
+                    
+                    for j, arrow2 in enumerate(arrow_info):
+                        if i == j:
+                            continue
+                        
+                        key2 = arrow2['key']
+                        current_offset2 = arrow_offsets.get(key2, 0)
+                        
+                        # Вычисляем расстояние между стрелками с учетом текущих смещений
+                        # Применяем смещения к точкам стрелок
+                        perp_angle1 = arrow1['perp_angle']
+                        perp_angle2 = arrow2['perp_angle']
+                        
+                        # Смещаем точки стрелок
+                        start1 = QPointF(
+                            arrow1['start_pt'].x() + current_offset1 * math.cos(perp_angle1),
+                            arrow1['start_pt'].y() + current_offset1 * math.sin(perp_angle1)
+                        )
+                        end1 = QPointF(
+                            arrow1['end_pt'].x() + current_offset1 * math.cos(perp_angle1),
+                            arrow1['end_pt'].y() + current_offset1 * math.sin(perp_angle1)
+                        )
+                        
+                        start2 = QPointF(
+                            arrow2['start_pt'].x() + current_offset2 * math.cos(perp_angle2),
+                            arrow2['start_pt'].y() + current_offset2 * math.sin(perp_angle2)
+                        )
+                        end2 = QPointF(
+                            arrow2['end_pt'].x() + current_offset2 * math.cos(perp_angle2),
+                            arrow2['end_pt'].y() + current_offset2 * math.sin(perp_angle2)
+                        )
+                        
+                        # Вычисляем минимальное расстояние между смещенными стрелками
+                        temp_arrow1 = {'start_pt': start1, 'end_pt': end1}
+                        temp_arrow2 = {'start_pt': start2, 'end_pt': end2}
+                        dist = min_distance_between_segments(temp_arrow1, temp_arrow2)
+                        
+                        if dist < min_spacing:
+                            # Применяем силу отталкивания
+                            mid1 = QPointF((start1.x() + end1.x()) / 2, (start1.y() + end1.y()) / 2)
+                            mid2 = QPointF((start2.x() + end2.x()) / 2, (start2.y() + end2.y()) / 2)
+                            
+                            dx_mid = mid2.x() - mid1.x()
+                            dy_mid = mid2.y() - mid1.y()
+                            perp_dot = dx_mid * math.cos(perp_angle1) + dy_mid * math.sin(perp_angle1)
+                            
+                            force_amount = (min_spacing - dist) * 0.2
+                            
+                            if abs(perp_dot) > 0.1:
+                                if perp_dot > 0:
+                                    force1 -= force_amount
+                                else:
+                                    force1 += force_amount
+                            else:
+                                force1 -= force_amount
+                    
+                    # Применяем силу (с затуханием)
+                    arrow_offsets[key1] = current_offset1 + force1 * 0.5
+        
+        return arrow_offsets
     
     def _draw_arrow_head(self, painter, from_point, to_point):
         """Рисует наконечник стрелки на конце линии."""
