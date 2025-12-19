@@ -4,7 +4,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QPushButton,
-    QTextEdit,
     QMessageBox,
     QFileDialog,
     QTableWidget,
@@ -13,6 +12,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QScrollArea,
     QSizePolicy,
+    QComboBox,
 )
 from PySide6.QtCore import Qt
 
@@ -37,6 +37,8 @@ class PetriNetApp(QMainWindow):
 
         self._setup_ui()
         self._update_display()
+        # Синхронизируем ComboBox с текущим режимом
+        self._sync_layout_combo()
 
     # --- Построение интерфейса ---
 
@@ -52,11 +54,6 @@ class PetriNetApp(QMainWindow):
         # Виджет визуализации сети
         self.petri_view = PetriNetWidget(self.model)
         self.petri_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-        # Текстовое описание (справа)
-        self.display = QTextEdit()
-        self.display.setReadOnly(True)
-        self.display.setFontPointSize(10)
 
         # Табличный редактор сети
         self._init_editor_widgets()
@@ -74,6 +71,19 @@ class PetriNetApp(QMainWindow):
         btn_save = QPushButton("4. Выгрузить в output.txt")
         btn_save.clicked.connect(self._save_to_file)
 
+        # Переключатель алгоритма раскладки (ComboBox)
+        layout_label = QLabel("Раскладка:")
+        self.layout_combo = QComboBox()
+        self.layout_combo.addItems([
+            "Ряды",
+            "Иерархия (демо)",
+            "Конечный автомат",
+            "Иерархический поток",
+            "Инженерная схема",
+            "Органический"
+        ])
+        self.layout_combo.currentIndexChanged.connect(self._on_layout_changed)
+
         btn_step = QPushButton("5. Выполнить шаг (Сработать)")
         btn_step.clicked.connect(self._perform_step)
 
@@ -81,25 +91,30 @@ class PetriNetApp(QMainWindow):
         controls_layout.addWidget(btn_random_marking)
         controls_layout.addWidget(btn_random_net)
         controls_layout.addWidget(btn_save)
+        controls_layout.addWidget(layout_label)
+        controls_layout.addWidget(self.layout_combo)
         controls_layout.addSpacing(20)
         controls_layout.addWidget(btn_step)
         controls_layout.addStretch(1)
 
         main_layout.addWidget(controls_widget)
 
-        # Область прокрутки для табличного редактора
+        # Основная область с графом и таблицами
+        # Граф сверху, таблицы снизу
+        main_content = QVBoxLayout()
+        main_content.addWidget(self.petri_view, stretch=3)
+        
+        # Область прокрутки для табличного редактора (внизу, всегда видима)
         self.editor_scroll = QScrollArea()
         self.editor_scroll.setWidgetResizable(True)
         self.editor_scroll.setWidget(self.editor_widget)
-        self.editor_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-        # Правая вертикальная панель
-        right_panel = QVBoxLayout()
-        right_panel.addWidget(self.petri_view, stretch=4)
-        right_panel.addWidget(self.editor_scroll, stretch=3)
-        right_panel.addWidget(self.display, stretch=3)
-
-        main_layout.addLayout(right_panel)
+        self.editor_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.editor_scroll.setMaximumHeight(300)  # Ограничиваем высоту, чтобы граф был виден
+        self.editor_scroll.setMinimumHeight(200)  # Минимальная высота для видимости таблиц
+        
+        main_content.addWidget(self.editor_scroll, stretch=1)
+        
+        main_layout.addLayout(main_content, stretch=1)
         self.setCentralWidget(central_widget)
 
         # Заполнить таблицы начальными значениями
@@ -252,47 +267,23 @@ class PetriNetApp(QMainWindow):
 
             log_event("Модель изменена через табличный редактор (marking/W_in/W_out обновлены).")
             log_state_snapshot("Состояние сети после изменения через табличный редактор", self.model)
-            self._update_display("Изменения из таблиц успешно применены.")
+            # Сбрасываем раскладку при изменении модели
+            self.petri_view.reset_layout()
+            self._update_display()
         except ValueError as e:
             QMessageBox.critical(self, "Ошибка в таблицах", str(e))
 
-    # --- Обновление текстового описания ---
+    # --- Обновление отображения ---
 
     def _update_display(self, message: str = ""):
-        """Обновляет содержимое на экране справа (текстовый вывод)."""
-        data = self.model.to_dict()
-
+        """Обновляет визуализацию и таблицы."""
         # Обновляем визуализацию и редактор
         self.petri_view.update()
         self._sync_editor_from_model()
-
-        output = "## ⚙️ Текущая Модель Ординарной Сети Петри\n"
-        output += f"**Места (P):** {data['num_places']}, **Переходы (T):** {data['num_transitions']}\n"
-        output += f"**Макс. меток:** {self.model.MAX_TOKENS}\n\n"
-
-        output += "### 🟡 Разметка M (Места p1..p7):\n"
-        output += f"{data['marking']}\n\n"
-
-        # Матрица W_in
-        output += "### ⬇️ Входная матрица W_in (t_i потребляет фишки из p_j):\n"
-        output += f"| T/P | {' | '.join(f'p{i+1}' for i in range(self.model.P))} |\n"
-        output += "|:---:|:---:" + ":---:" * (self.model.P - 1) + "|\n"
-        for j, row in enumerate(data["W_in"]):
-            output += f"| t{j+1} | {' | '.join(map(str, row))} |\n"
-        output += "\n"
-
-        # Матрица W_out
-        output += "### ⬆️ Выходная матрица W_out (t_i добавляет фишки в p_j):\n"
-        output += f"| T/P | {' | '.join(f'p{i+1}' for i in range(self.model.P))} |\n"
-        output += "|:---:|:---:" + ":---:" * (self.model.P - 1) + "|\n"
-        for j, row in enumerate(data["W_out"]):
-            output += f"| t{j+1} | {' | '.join(map(str, row))} |\n"
-        output += "\n"
-
-        if message:
-            output += f"--- \n\n**✅ Сообщение:** {message}"
-
-        self.display.setText(output)
+        
+        # Показываем сообщение только если оно есть и важно
+        if message and ("ошибка" in message.lower() or "блокирована" in message.lower()):
+            QMessageBox.information(self, "Информация", message)
 
     # --- Слоты для кнопок ---
 
@@ -315,7 +306,9 @@ class PetriNetApp(QMainWindow):
             self.model.from_dict(data)
             log_event(f"Сеть загружена из файла '{file_name}'.")
             log_state_snapshot("Состояние сети после загрузки из файла", self.model)
-            self._update_display(f"Сеть успешно загружена из файла:\n{file_name}")
+            # Сбрасываем раскладку при загрузке новой модели
+            self.petri_view.reset_layout()
+            self._update_display()
         except FileNotFoundError:
             QMessageBox.critical(self, "Ошибка", f"Файл не найден:\n{file_name}")
         except ValueError as e:
@@ -328,14 +321,18 @@ class PetriNetApp(QMainWindow):
         self.model.generate_random_marking()
         log_event("Разметка M случайно перегенерирована (0..3).")
         log_state_snapshot("Состояние сети после генерации случайной разметки", self.model)
-        self._update_display("Разметка заполнена случайными значениями (0-3).")
+        # Сбрасываем раскладку при изменении разметки (хотя структура не меняется, но для консистентности)
+        self.petri_view.reset_layout()
+        self._update_display()
 
     def _random_net(self):
         """Сгенерировать случайную (но корректную) сеть Петри."""
         self.model.generate_random_net()
         log_event("Сгенерирована новая случайная ординарная сеть (W_in/W_out).")
         log_state_snapshot("Состояние сети после генерации новой случайной сети", self.model)
-        self._update_display("Сгенерирована новая случайная ординарная сеть.")
+        # Сбрасываем раскладку при генерации новой сети
+        self.petri_view.reset_layout()
+        self._update_display()
 
     def _save_to_file(self):
         """Выгружает результат в output.txt в текстовом табличном формате."""
@@ -344,7 +341,7 @@ class PetriNetApp(QMainWindow):
                 f.write(format_petri_to_text(self.model))
             log_event("Модель сети сохранена в файл 'output.txt'.")
             log_state_snapshot("Состояние сети на момент сохранения в output.txt", self.model)
-            self._update_display("Модель успешно выгружена в output.txt.")
+            self._update_display()
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл: {e}")
 
@@ -353,6 +350,40 @@ class PetriNetApp(QMainWindow):
         result = self.model.step()
         log_event(f"Выполнен шаг моделирования. {result}")
         log_state_snapshot("Состояние сети после шага моделирования", self.model)
-        self._update_display(f"Шаг выполнен. {result}")
+        
+        # Показываем всплывающее сообщение только если сеть заблокирована
+        if "заблокирована" in result.lower() or "нет разрешенных" in result.lower():
+            QMessageBox.information(self, "Шаг выполнен", result)
+        
+        self._update_display()
+
+    def _on_layout_changed(self, index):
+        """Обработчик изменения режима раскладки через ComboBox."""
+        mode_map = {
+            0: "rows",
+            1: "hier_demo",
+            2: "fsm",
+            3: "hierarchical",
+            4: "orthogonal",
+            5: "organic"
+        }
+        
+        new_mode = mode_map.get(index, "rows")
+        self.petri_view.set_layout_mode(new_mode)
+        self._update_display()
+    
+    def _sync_layout_combo(self):
+        """Синхронизирует ComboBox с текущим режимом раскладки."""
+        mode_to_index = {
+            "rows": 0,
+            "hier_demo": 1,
+            "fsm": 2,
+            "hierarchical": 3,
+            "orthogonal": 4,
+            "organic": 5
+        }
+        current_mode = self.petri_view.layout_mode
+        index = mode_to_index.get(current_mode, 0)
+        self.layout_combo.setCurrentIndex(index)
 
 
