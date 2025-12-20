@@ -13,6 +13,9 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QComboBox,
+    QListWidget,
+    QInputDialog,
+    QLineEdit,
 )
 from PySide6.QtCore import Qt
 
@@ -20,6 +23,7 @@ from petri_model import PetriNetModel
 from petri_format import format_petri_to_text, parse_petri_from_text
 from petri_logging import log_event, log_state_snapshot
 from petri_widget import PetriNetWidget
+from petri_save import PetriNetSave
 
 
 class PetriNetApp(QMainWindow):
@@ -35,10 +39,15 @@ class PetriNetApp(QMainWindow):
         self.model.generate_random_net()
         self.model.generate_random_marking()
 
+        # Система сохранения
+        self.save_manager = PetriNetSave()
+
         self._setup_ui()
         self._update_display()
         # Синхронизируем ComboBox с текущим режимом
         self._sync_layout_combo()
+        # Загружаем список сохранений
+        self._refresh_saved_list()
 
     # --- Построение интерфейса ---
 
@@ -87,6 +96,13 @@ class PetriNetApp(QMainWindow):
         btn_step = QPushButton("5. Выполнить шаг (Сработать)")
         btn_step.clicked.connect(self._perform_step)
 
+        # Кнопки сохранения
+        btn_save_layout = QPushButton("6. Сохранить размещение")
+        btn_save_layout.clicked.connect(self._save_layout)
+
+        btn_save_graph = QPushButton("7. Сохранить граф")
+        btn_save_graph.clicked.connect(self._save_graph)
+
         controls_layout.addWidget(btn_load)
         controls_layout.addWidget(btn_random_marking)
         controls_layout.addWidget(btn_random_net)
@@ -95,6 +111,9 @@ class PetriNetApp(QMainWindow):
         controls_layout.addWidget(self.layout_combo)
         controls_layout.addSpacing(20)
         controls_layout.addWidget(btn_step)
+        controls_layout.addSpacing(10)
+        controls_layout.addWidget(btn_save_layout)
+        controls_layout.addWidget(btn_save_graph)
         controls_layout.addStretch(1)
 
         main_layout.addWidget(controls_widget)
@@ -115,6 +134,35 @@ class PetriNetApp(QMainWindow):
         main_content.addWidget(self.editor_scroll, stretch=1)
         
         main_layout.addLayout(main_content, stretch=1)
+        
+        # Правая панель со списком сохраненных графов
+        saved_widget = QWidget()
+        saved_layout = QVBoxLayout(saved_widget)
+        saved_widget.setFixedWidth(250)
+        
+        saved_label = QLabel("Сохраненные графы:")
+        saved_layout.addWidget(saved_label)
+        
+        self.saved_list = QListWidget()
+        self.saved_list.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self.saved_list.itemDoubleClicked.connect(self._load_saved_layout)
+        saved_layout.addWidget(self.saved_list)
+        
+        # Кнопки управления сохранениями
+        btn_load_saved = QPushButton("Загрузить")
+        btn_load_saved.clicked.connect(self._load_saved_layout)
+        saved_layout.addWidget(btn_load_saved)
+        
+        btn_delete_saved = QPushButton("Удалить")
+        btn_delete_saved.clicked.connect(self._delete_saved_layout)
+        saved_layout.addWidget(btn_delete_saved)
+        
+        btn_refresh_saved = QPushButton("Обновить список")
+        btn_refresh_saved.clicked.connect(self._refresh_saved_list)
+        saved_layout.addWidget(btn_refresh_saved)
+        
+        main_layout.addWidget(saved_widget)
+        
         self.setCentralWidget(central_widget)
 
         # Заполнить таблицы начальными значениями
@@ -385,5 +433,150 @@ class PetriNetApp(QMainWindow):
         current_mode = self.petri_view.layout_mode
         index = mode_to_index.get(current_mode, 0)
         self.layout_combo.setCurrentIndex(index)
+    
+    # --- Сохранение и загрузка размещений ---
+    
+    def _save_layout(self):
+        """Сохраняет текущее размещение графа."""
+        name, ok = QInputDialog.getText(
+            self, 
+            "Сохранить размещение", 
+            "Введите имя для сохранения:",
+            QLineEdit.Normal,
+            ""
+        )
+        
+        if not ok or not name.strip():
+            return
+        
+        name = name.strip()
+        
+        # Получаем текущие позиции и режим размещения
+        place_positions = self.petri_view.place_positions
+        transition_positions = self.petri_view.transition_positions
+        layout_mode = self.petri_view.layout_mode
+        
+        if self.save_manager.save_layout(name, self.model, place_positions, 
+                                        transition_positions, layout_mode):
+            QMessageBox.information(self, "Успех", f"Размещение '{name}' успешно сохранено!")
+            self._refresh_saved_list()
+        else:
+            QMessageBox.critical(self, "Ошибка", "Не удалось сохранить размещение.")
+    
+    def _save_graph(self):
+        """Сохраняет только граф (модель) без размещения."""
+        name, ok = QInputDialog.getText(
+            self, 
+            "Сохранить граф", 
+            "Введите имя для сохранения:",
+            QLineEdit.Normal,
+            ""
+        )
+        
+        if not ok or not name.strip():
+            return
+        
+        name = name.strip()
+        
+        if self.save_manager.save_graph(name, self.model):
+            QMessageBox.information(self, "Успех", f"Граф '{name}' успешно сохранен!")
+            self._refresh_saved_list()
+        else:
+            QMessageBox.critical(self, "Ошибка", "Не удалось сохранить граф.")
+    
+    def _load_saved_layout(self):
+        """Загружает сохраненное размещение."""
+        current_item = self.saved_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "Предупреждение", "Выберите сохранение из списка.")
+            return
+        
+        name = current_item.text()
+        data = self.save_manager.load_layout(name)
+        
+        if not data:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить '{name}'.")
+            return
+        
+        # Восстанавливаем модель
+        model_data = data["model"]
+        self.model = PetriNetModel(num_places=model_data["P"], num_transitions=model_data["T"])
+        self.model.M = model_data["M"]
+        self.model.W_in = model_data["W_in"]
+        self.model.W_out = model_data["W_out"]
+        self.model.MAX_TOKENS = model_data.get("MAX_TOKENS", 3)
+        
+        # Восстанавливаем режим размещения (до обновления модели)
+        if "layout_mode" in data:
+            layout_mode = data["layout_mode"]
+            self.petri_view.set_layout_mode(layout_mode)
+            # Синхронизируем ComboBox
+            layout_map = {
+                "rows": 0,
+                "hier_demo": 1,
+                "fsm": 2,
+                "hierarchical": 3,
+                "orthogonal": 4,
+                "organic": 5
+            }
+            if layout_mode in layout_map:
+                self.layout_combo.setCurrentIndex(layout_map[layout_mode])
+        
+        # Сохраняем позиции перед обновлением модели (если есть)
+        saved_positions = None
+        if "place_positions" in data and "transition_positions" in data:
+            # Убеждаемся, что количество позиций совпадает
+            if len(data["place_positions"]) == model_data["P"] and len(data["transition_positions"]) == model_data["T"]:
+                saved_positions = {
+                    "place_positions": data["place_positions"],
+                    "transition_positions": data["transition_positions"]
+                }
+        
+        # Обновляем виджет (это вызовет reset_layout, но мы восстановим позиции после)
+        self.petri_view.set_model(self.model)
+        
+        # Восстанавливаем позиции после установки модели
+        if saved_positions:
+            self.petri_view.place_positions = saved_positions["place_positions"]
+            self.petri_view.transition_positions = saved_positions["transition_positions"]
+            self.petri_view.positions_initialized = True
+        
+        # Обновляем таблицы и отображение
+        self._sync_editor_from_model()
+        self._update_display()
+        self.petri_view.update()
+        
+        QMessageBox.information(self, "Успех", f"Размещение '{name}' успешно загружено!")
+    
+    def _delete_saved_layout(self):
+        """Удаляет сохраненное размещение."""
+        current_item = self.saved_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "Предупреждение", "Выберите сохранение из списка.")
+            return
+        
+        name = current_item.text()
+        
+        reply = QMessageBox.question(
+            self,
+            "Подтверждение",
+            f"Вы уверены, что хотите удалить '{name}'?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.save_manager.delete_saved(name):
+                QMessageBox.information(self, "Успех", f"'{name}' успешно удалено.")
+                self._refresh_saved_list()
+            else:
+                QMessageBox.critical(self, "Ошибка", "Не удалось удалить сохранение.")
+    
+    def _refresh_saved_list(self):
+        """Обновляет список сохраненных графов."""
+        self.saved_list.clear()
+        saved_names = self.save_manager.list_saved()
+        for name in saved_names:
+            self.saved_list.addItem(name)
 
 
