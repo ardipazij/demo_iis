@@ -3,17 +3,50 @@
 """
 import json
 import os
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from PySide6.QtCore import QPointF
+
+
+def get_user_data_dir() -> Path:
+    """
+    Возвращает путь к пользовательской директории для сохранения данных.
+    Использует AppData\Local для Windows, чтобы избежать проблем с правами доступа.
+    """
+    if os.name == 'nt':  # Windows
+        appdata = os.getenv('LOCALAPPDATA')
+        if appdata:
+            return Path(appdata) / "PetriNetApp" / "saved_layouts"
+        else:
+            # Fallback на домашнюю директорию
+            return Path.home() / "PetriNetApp" / "saved_layouts"
+    else:
+        # Linux/Mac
+        return Path.home() / ".petrinetapp" / "saved_layouts"
 
 
 class PetriNetSave:
     """Класс для сохранения и загрузки размещений графов Петри."""
     
-    def __init__(self, save_dir: str = "saved_layouts"):
-        self.save_dir = save_dir
-        if not os.path.exists(self.save_dir):
-            os.makedirs(self.save_dir)
+    def __init__(self, save_dir: str = None):
+        """
+        Инициализирует менеджер сохранений.
+        
+        Args:
+            save_dir: Путь к директории сохранений. Если None, используется
+                     пользовательская директория (AppData для Windows).
+        """
+        if save_dir is None:
+            self.save_dir = get_user_data_dir()
+        else:
+            self.save_dir = Path(save_dir)
+        
+        # Создаем директорию, если её нет
+        if not self.save_dir.exists():
+            self.save_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Преобразуем в строку для совместимости
+        self.save_dir = str(self.save_dir)
     
     def save_layout(self, name: str, model, place_positions: List[QPointF], 
                     transition_positions: List[QPointF], layout_mode: str) -> bool:

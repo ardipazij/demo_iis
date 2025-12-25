@@ -41,6 +41,12 @@ class PetriNetApp(QMainWindow):
 
         # Система сохранения
         self.save_manager = PetriNetSave()
+        
+        # Флаги для сворачивания панелей
+        self.editor_collapsed = False
+        self.saved_panel_collapsed = False
+        self.editor_original_height = 300
+        self.saved_panel_original_width = 250
 
         self._setup_ui()
         self._update_display()
@@ -121,47 +127,85 @@ class PetriNetApp(QMainWindow):
         # Основная область с графом и таблицами
         # Граф сверху, таблицы снизу
         main_content = QVBoxLayout()
+        
+        # Заголовок для панели таблиц с кнопкой сворачивания
+        editor_header = QWidget()
+        editor_header_layout = QHBoxLayout(editor_header)
+        editor_header_layout.setContentsMargins(0, 0, 0, 0)
+        editor_label = QLabel("Матрицы и разметка:")
+        self.btn_collapse_editor = QPushButton("▼")
+        self.btn_collapse_editor.setFixedWidth(30)
+        self.btn_collapse_editor.setFixedHeight(25)
+        self.btn_collapse_editor.clicked.connect(self._toggle_editor)
+        editor_header_layout.addWidget(editor_label)
+        editor_header_layout.addStretch()
+        editor_header_layout.addWidget(self.btn_collapse_editor)
+        main_content.addWidget(editor_header)
+        
         main_content.addWidget(self.petri_view, stretch=3)
         
-        # Область прокрутки для табличного редактора (внизу, всегда видима)
+        # Область прокрутки для табличного редактора (внизу)
         self.editor_scroll = QScrollArea()
         self.editor_scroll.setWidgetResizable(True)
         self.editor_scroll.setWidget(self.editor_widget)
         self.editor_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.editor_scroll.setMaximumHeight(300)  # Ограничиваем высоту, чтобы граф был виден
         self.editor_scroll.setMinimumHeight(200)  # Минимальная высота для видимости таблиц
+        self.editor_original_height = 300
         
         main_content.addWidget(self.editor_scroll, stretch=1)
         
         main_layout.addLayout(main_content, stretch=1)
         
         # Правая панель со списком сохраненных графов
-        saved_widget = QWidget()
-        saved_layout = QVBoxLayout(saved_widget)
-        saved_widget.setFixedWidth(250)
+        self.saved_widget = QWidget()
+        saved_layout = QVBoxLayout(self.saved_widget)
+        saved_layout.setContentsMargins(0, 0, 0, 0)
+        saved_layout.setSpacing(0)
+        self.saved_widget.setFixedWidth(250)
+        self.saved_panel_original_width = 250
         
+        # Заголовок с кнопкой сворачивания (всегда видим)
+        self.saved_header = QWidget()
+        saved_header_layout = QHBoxLayout(self.saved_header)
+        saved_header_layout.setContentsMargins(5, 5, 5, 5)
+        saved_header_layout.setSpacing(5)
         saved_label = QLabel("Сохраненные графы:")
-        saved_layout.addWidget(saved_label)
+        self.btn_collapse_saved = QPushButton("▼")
+        self.btn_collapse_saved.setFixedWidth(30)
+        self.btn_collapse_saved.setFixedHeight(25)
+        self.btn_collapse_saved.clicked.connect(self._toggle_saved_panel)
+        saved_header_layout.addWidget(saved_label)
+        saved_header_layout.addStretch()
+        saved_header_layout.addWidget(self.btn_collapse_saved)
+        saved_layout.addWidget(self.saved_header)
+        
+        # Контейнер для содержимого (список и кнопки)
+        self.saved_content = QWidget()
+        saved_content_layout = QVBoxLayout(self.saved_content)
+        saved_content_layout.setContentsMargins(5, 5, 5, 5)
         
         self.saved_list = QListWidget()
         self.saved_list.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.saved_list.itemDoubleClicked.connect(self._load_saved_layout)
-        saved_layout.addWidget(self.saved_list)
+        saved_content_layout.addWidget(self.saved_list)
         
         # Кнопки управления сохранениями
         btn_load_saved = QPushButton("Загрузить")
         btn_load_saved.clicked.connect(self._load_saved_layout)
-        saved_layout.addWidget(btn_load_saved)
+        saved_content_layout.addWidget(btn_load_saved)
         
         btn_delete_saved = QPushButton("Удалить")
         btn_delete_saved.clicked.connect(self._delete_saved_layout)
-        saved_layout.addWidget(btn_delete_saved)
+        saved_content_layout.addWidget(btn_delete_saved)
         
         btn_refresh_saved = QPushButton("Обновить список")
         btn_refresh_saved.clicked.connect(self._refresh_saved_list)
-        saved_layout.addWidget(btn_refresh_saved)
+        saved_content_layout.addWidget(btn_refresh_saved)
         
-        main_layout.addWidget(saved_widget)
+        saved_layout.addWidget(self.saved_content)
+        
+        main_layout.addWidget(self.saved_widget)
         
         self.setCentralWidget(central_widget)
 
@@ -578,5 +622,42 @@ class PetriNetApp(QMainWindow):
         saved_names = self.save_manager.list_saved()
         for name in saved_names:
             self.saved_list.addItem(name)
+    
+    # --- Сворачивание/разворачивание панелей ---
+    
+    def _toggle_editor(self):
+        """Сворачивает/разворачивает панель с таблицами."""
+        if self.editor_collapsed:
+            # Разворачиваем
+            self.editor_scroll.setMaximumHeight(self.editor_original_height)
+            self.editor_scroll.setMinimumHeight(200)
+            self.editor_scroll.show()
+            self.btn_collapse_editor.setText("▼")
+            self.editor_collapsed = False
+        else:
+            # Сворачиваем
+            self.editor_original_height = self.editor_scroll.height()
+            self.editor_scroll.setMaximumHeight(0)
+            self.editor_scroll.setMinimumHeight(0)
+            self.editor_scroll.hide()
+            self.btn_collapse_editor.setText("▲")
+            self.editor_collapsed = True
+    
+    def _toggle_saved_panel(self):
+        """Сворачивает/разворачивает панель с сохраненными графами."""
+        if self.saved_panel_collapsed:
+            # Разворачиваем
+            self.saved_widget.setFixedWidth(self.saved_panel_original_width)
+            self.saved_content.show()
+            self.btn_collapse_saved.setText("▼")
+            self.saved_panel_collapsed = False
+        else:
+            # Сворачиваем
+            self.saved_panel_original_width = self.saved_widget.width()
+            # Оставляем исходную ширину, чтобы заголовок с подписью оставался на месте
+            # Скрываем только содержимое (список и кнопки)
+            self.saved_content.hide()
+            self.btn_collapse_saved.setText("▲")
+            self.saved_panel_collapsed = True
 
 

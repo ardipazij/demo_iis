@@ -26,33 +26,47 @@ try:
 except ImportError:
     HAS_PYDOT = False
 
-# Настройка пути к Graphviz (если он установлен локально)
+# Настройка пути к Graphviz (из встроенных ресурсов или локально)
 GRAPHVIZ_BIN_PATH = None
 if HAS_PYDOT:
-    # Проверяем возможные пути к Graphviz
-    possible_paths = [
-        os.path.join(os.path.dirname(__file__), "Graphviz-14.1.1-win32", "bin"),
-        os.path.join(os.path.dirname(__file__), "Graphviz", "bin"),
-        os.path.join(os.getcwd(), "Graphviz-14.1.1-win32", "bin"),
-        os.path.join(os.getcwd(), "Graphviz", "bin"),
-    ]
+    # Пытаемся получить Graphviz из встроенных ресурсов PyInstaller (если запущено из exe)
+    try:
+        from graphviz_extractor import setup_graphviz_path
+        graphviz_path = setup_graphviz_path()
+        if graphviz_path:
+            GRAPHVIZ_BIN_PATH = graphviz_path
+            log_event(f"Graphviz найден во встроенных ресурсах: {graphviz_path}")
+    except ImportError:
+        # Модуль graphviz_extractor не найден (не критично)
+        pass
+    except Exception as e:
+        log_event(f"Ошибка при настройке Graphviz: {e}")
     
-    for path in possible_paths:
-        dot_exe = os.path.join(path, "dot.exe")
-        if os.path.exists(dot_exe):
-            GRAPHVIZ_BIN_PATH = path
-            # Добавляем путь к Graphviz в PATH для текущего процесса
-            if path not in os.environ.get("PATH", ""):
-                os.environ["PATH"] = path + os.pathsep + os.environ.get("PATH", "")
-            log_event(f"Найден Graphviz в: {path}")
-            break
+    # Если не найден во встроенных ресурсах, проверяем локальные пути
+    if not GRAPHVIZ_BIN_PATH:
+        possible_paths = [
+            os.path.join(os.path.dirname(__file__), "Graphviz-14.1.1-win32", "bin"),
+            os.path.join(os.path.dirname(__file__), "Graphviz", "bin"),
+            os.path.join(os.getcwd(), "Graphviz-14.1.1-win32", "bin"),
+            os.path.join(os.getcwd(), "Graphviz", "bin"),
+        ]
+        
+        for path in possible_paths:
+            dot_exe = os.path.join(path, "dot.exe")
+            if os.path.exists(dot_exe):
+                GRAPHVIZ_BIN_PATH = path
+                # Добавляем путь к Graphviz в PATH для текущего процесса
+                if path not in os.environ.get("PATH", ""):
+                    os.environ["PATH"] = path + os.pathsep + os.environ.get("PATH", "")
+                log_event(f"Найден Graphviz локально: {path}")
+                break
     
     # Также устанавливаем переменную окружения для pydot
     if GRAPHVIZ_BIN_PATH:
         os.environ["GRAPHVIZ_INSTALL_DIR"] = os.path.dirname(GRAPHVIZ_BIN_PATH)
         log_event(f"Установлен GRAPHVIZ_INSTALL_DIR: {os.environ['GRAPHVIZ_INSTALL_DIR']}")
     else:
-        log_event("Graphviz не найден в локальных папках, будет использован системный PATH")
+        log_event("Graphviz не найден, будет использован системный PATH")
 
 
 class PetriNetWidget(QWidget):
@@ -91,8 +105,20 @@ class PetriNetWidget(QWidget):
         self._last_scale = None
         self._last_widget_size = None  # Для отслеживания изменения размера виджета
         
+        # Масштабирование графа колесиком мыши
+        self.zoom_factor = 1.0  # Текущий масштаб (1.0 = 100%)
+        self.min_zoom = 0.3  # Минимальный масштаб
+        self.max_zoom = 3.0  # Максимальный масштаб
+        self.zoom_step = 0.1  # Шаг масштабирования
+        
         # Для ортогонального режима: контрольные точки для ломаных линий
         self.orthogonal_arc_points = {}  # {(p_idx, t_idx): [QPointF, ...]} или {(t_idx, p_idx): [QPointF, ...]}
+        
+        # Масштабирование графа
+        self.zoom_factor = 1.0  # Текущий масштаб (1.0 = 100%)
+        self.min_zoom = 0.3  # Минимальный масштаб
+        self.max_zoom = 3.0  # Максимальный масштаб
+        self.zoom_step = 0.1  # Шаг масштабирования
         
         # Базовые размеры элементов (будут масштабироваться)
         self.base_place_radius = 18
@@ -127,6 +153,8 @@ class PetriNetWidget(QWidget):
         # Сбрасываем сохраненный масштаб и размер виджета
         self._last_scale = None
         self._last_widget_size = None
+        # Сбрасываем масштаб колесика мыши
+        self.zoom_factor = 1.0
         # Перерисовываем виджет
         self.update()
 
@@ -256,9 +284,10 @@ class PetriNetWidget(QWidget):
             
             scale = max(0.4, min(scale_x, scale_y))
         
-        place_radius = self.base_place_radius * scale
-        trans_width = self.base_trans_width * scale
-        trans_height = self.base_trans_height * scale
+        # Применяем масштаб колесика мыши
+        place_radius = self.base_place_radius * scale * self.zoom_factor
+        trans_width = self.base_trans_width * scale * self.zoom_factor
+        trans_height = self.base_trans_height * scale * self.zoom_factor
         
         return place_radius, trans_width, trans_height
     
@@ -2298,6 +2327,66 @@ class PetriNetWidget(QWidget):
             self.selected_place_idx = None
             self.selected_transition_idx = None
             self.drag_start_pos = None
+    
+    def wheelEvent(self, event):
+        """Обработчик прокрутки колесика мыши для масштабирования графа."""
+        # Получаем угол прокрутки (в градусах)
+        delta = event.angleDelta().y()
+        
+        if delta == 0:
+            return
+        
+        # Определяем направление прокрутки
+        zoom_in = delta > 0
+        
+        # Вычисляем новый масштаб
+        if zoom_in:
+            new_zoom = min(self.zoom_factor + self.zoom_step, self.max_zoom)
+        else:
+            new_zoom = max(self.zoom_factor - self.zoom_step, self.min_zoom)
+        
+        # Если масштаб не изменился, ничего не делаем
+        if abs(new_zoom - self.zoom_factor) < 0.01:
+            return
+        
+        # Получаем позицию мыши относительно виджета
+        mouse_pos = event.position()
+        
+        # Сохраняем старый масштаб
+        old_zoom = self.zoom_factor
+        
+        # Применяем новый масштаб
+        self.zoom_factor = new_zoom
+        
+        # Масштабируем позиции относительно точки курсора
+        if self.place_positions and self.transition_positions:
+            # Вычисляем смещение для центрирования относительно курсора
+            scale_change = new_zoom / old_zoom
+            
+            for i in range(len(self.place_positions)):
+                # Переводим позицию относительно курсора
+                relative_x = self.place_positions[i].x() - mouse_pos.x()
+                relative_y = self.place_positions[i].y() - mouse_pos.y()
+                
+                # Масштабируем относительно курсора
+                new_x = mouse_pos.x() + relative_x * scale_change
+                new_y = mouse_pos.y() + relative_y * scale_change
+                
+                self.place_positions[i] = QPointF(new_x, new_y)
+            
+            for i in range(len(self.transition_positions)):
+                # Переводим позицию относительно курсора
+                relative_x = self.transition_positions[i].x() - mouse_pos.x()
+                relative_y = self.transition_positions[i].y() - mouse_pos.y()
+                
+                # Масштабируем относительно курсора
+                new_x = mouse_pos.x() + relative_x * scale_change
+                new_y = mouse_pos.y() + relative_y * scale_change
+                
+                self.transition_positions[i] = QPointF(new_x, new_y)
+        
+        # Перерисовываем виджет
+        self.update()
     
     def _find_place_at(self, pos):
         """Находит место в заданной позиции."""
